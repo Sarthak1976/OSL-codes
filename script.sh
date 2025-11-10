@@ -139,4 +139,6 @@ done
 
 
 sort -t ';' -k2,2 "$address_book" | column -t -s ';'
+chmod +x script.sh
+./script.sh
 
