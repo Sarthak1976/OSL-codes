@@ -1,0 +1,180 @@
+/*
+ * Producer-Consumer Problem in C using pthreads, mutex, and semaphores.
+ *
+ * This program demonstrates a solution where the producer writes to a file
+ * and the consumer reads from the same file.
+ *
+ * Synchronization:
+ * - pthread_mutex_t (mutex): Protects the critical section (file access)
+ * to ensure only one thread is reading or writing at a time.
+ * - sem_t (sem_empty): Binary semaphore, initialized to 1.
+ * Signals that the "buffer" (file) is empty and ready for the producer.
+ * Producer waits on this.
+ * - sem_t (sem_filled): Binary semaphore, initialized to 0.
+ * Signals that the "buffer" (file) is full and ready for the consumer.
+ * Consumer waits on this.
+ *
+ * To compile:
+ * gcc producer_consumer.c -o producer_consumer -lpthread
+ *
+ * To run:
+ * ./producer_consumer
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <unistd.h>     // For usleep
+#include <time.h>       // For srand
+
+// --- Configuration ---
+#define NUM_ITERATIONS 20                 // Number of items to produce/consume
+const char* FILENAME = "shared_data.txt"; // The shared file
+
+// --- Shared Resources ---
+pthread_mutex_t mutex;  // Mutex to protect file access
+sem_t sem_empty;        // Counts empty slots (init to 1, as file is initially "empty")
+sem_t sem_filled;       // Counts filled slots (init to 0, as file is initially empty)
+
+/*
+ * The Producer Thread
+ * Generates a number, waits for the "empty" signal, writes to the file,
+ * and signals "filled".
+ */
+void* producer(void* arg) {
+    for (int i = 0; i < NUM_ITERATIONS; i++) {
+        // 1. Produce the item
+        int num = rand() % 10; // Generate integer 0-9
+        
+        // 2. Wait for the "empty" signal (i.e., wait for consumer to be done)
+        sem_wait(&sem_empty);
+
+        // 3. Enter Critical Section
+        pthread_mutex_lock(&mutex);
+
+        // 4. Write to the shared file
+        FILE* f = fopen(FILENAME, "w");
+        if (f == NULL) {
+            perror("Producer: Error opening file");
+            pthread_mutex_unlock(&mutex);
+            exit(EXIT_FAILURE);
+        }
+        fprintf(f, "%d", num);
+        fclose(f);
+        printf("Producer produced: %d\n", num);
+
+        // 5. Exit Critical Section
+        pthread_mutex_unlock(&mutex);
+
+        // 6. Signal "filled" (i.e., tell consumer data is ready)
+        sem_post(&sem_filled);
+
+        // 7. Sleep for a random time (0-100 ms)
+        // usleep takes microseconds (1ms = 1000us)
+        int sleep_time_us = (rand() % 100001); 
+        usleep(sleep_time_us);
+    }
+    return NULL;
+}
+
+/*
+ * The Consumer Thread
+ * Waits for the "filled" signal, reads from the file, consumes the item,
+ * and signals "empty".
+ */
+void* consumer(void* arg) {
+    for (int i = 0; i < NUM_ITERATIONS; i++) {
+        int num;
+
+        // 1. Wait for the "filled" signal (i.e., wait for producer to be done)
+        sem_wait(&sem_filled);
+
+        // 2. Enter Critical Section
+        pthread_mutex_lock(&mutex);
+
+        // 3. Read from the shared file
+        FILE* f = fopen(FILENAME, "r");
+        if (f == NULL) {
+            perror("Consumer: Error opening file");
+            pthread_mutex_unlock(&mutex);
+            exit(EXIT_FAILURE);
+        }
+        
+        if (fscanf(f, "%d", &num) != 1) {
+             fprintf(stderr, "Consumer: Error reading from file\n");
+        }
+        fclose(f);
+
+        // 4. Exit Critical Section
+        pthread_mutex_unlock(&mutex);
+
+        // 5. Signal "empty" (i.e., tell producer we are done)
+        sem_post(&sem_empty);
+
+        // 6. Consume the item
+        printf("Consumer consumed: %d\n", num);
+
+        // Note: Consumer consumes as fast as possible, so no sleep here.
+    }
+    return NULL;
+}
+
+int main() {
+    // Seed the random number generator
+    srand(time(NULL));
+
+    // --- Initialize Synchronization Primitives ---
+    
+    // Initialize the mutex
+    if (pthread_mutex_init(&mutex, NULL) != 0) {
+        perror("Mutex initialization failed");
+        return 1;
+    }
+
+    // Initialize the semaphores
+    // sem_init(sem_t *sem, int pshared, unsigned int value);
+    // pshared = 0 because it's shared between threads of the same process.
+    
+    // sem_empty: Initial value 1 (the file is "empty" and ready for production)
+    if (sem_init(&sem_empty, 0, 1) != 0) {
+        perror("Semaphore (empty) initialization failed");
+        return 1;
+    }
+
+    // sem_filled: Initial value 0 (the file is *not* "full" yet)
+    if (sem_init(&sem_filled, 0, 0) != 0) {
+        perror("Semaphore (filled) initialization failed");
+        return 1;
+    }
+
+    // --- Create Threads ---
+    pthread_t prod_thread, cons_thread;
+
+    printf("Starting Producer and Consumer threads...\n");
+
+    if (pthread_create(&prod_thread, NULL, producer, NULL) != 0) {
+        perror("Failed to create producer thread");
+        return 1;
+    }
+    if (pthread_create(&cons_thread, NULL, consumer, NULL) != 0) {
+        perror("Failed to create consumer thread");
+        return 1;
+    }
+
+    // --- Wait for Threads to Finish ---
+    pthread_join(prod_thread, NULL);
+    pthread_join(cons_thread, NULL);
+
+    printf("Finished production and consumption.\n");
+
+    // --- Clean Up Resources ---
+    pthread_mutex_destroy(&mutex);
+    sem_destroy(&sem_empty);
+    sem_destroy(&sem_filled);
+
+    // Optional: Remove the data file
+    remove(FILENAME);
+
+    return 0;
+}
